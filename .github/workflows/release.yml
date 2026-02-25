@@ -142,10 +142,12 @@ jobs:
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          curl -sL https://github.com/sparkle-project/Sparkle/releases/latest/download/Sparkle-2.7.5.tar.xz | tar xJ -C /tmp
+          SPARKLE_URL=$(curl -s https://api.github.com/repos/sparkle-project/Sparkle/releases/latest | grep "browser_download_url.*tar.xz" | head -1 | cut -d'"' -f4)
+          curl -sL "$SPARKLE_URL" -o /tmp/sparkle.tar.xz
+          mkdir -p /tmp/sparkle && tar xJf /tmp/sparkle.tar.xz -C /tmp/sparkle
           DMG="build/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
           LENGTH=$(stat -f%z "$DMG")
-          SIGNATURE=$(echo "$SPARKLE_PRIVATE_KEY" | /tmp/bin/sign_update "$DMG")
+          SIGNATURE=$(echo "$SPARKLE_PRIVATE_KEY" | /tmp/sparkle/bin/sign_update "$DMG")
           echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
           echo "length=$LENGTH" >> "$GITHUB_OUTPUT"
 
