@@ -24,12 +24,6 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        run: xcodegen generate
-
       - name: Check available secrets
         env:
           CERT: ${{ secrets.CERTIFICATE_P12 }}
@@ -55,6 +49,12 @@ jobs:
           SWIFT_EOF
           sed -i '' "s|GOOGLE_CLIENT_ID_PLACEHOLDER|${GOOGLE_CLIENT_ID}|" Planviser/Services/Secrets.swift
           sed -i '' "s|MICROSOFT_CLIENT_ID_PLACEHOLDER|${MICROSOFT_CLIENT_ID}|" Planviser/Services/Secrets.swift
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
 
       - name: Import signing certificate
         if: env.HAS_CERTIFICATE == 'true'
