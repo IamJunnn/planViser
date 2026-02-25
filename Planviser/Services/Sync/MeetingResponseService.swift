@@ -15,16 +15,28 @@ final class MeetingResponseService {
             respondViaGmail(meeting: meeting, response: response, modelContext: modelContext)
         case .outlook:
             respondViaOutlook(meeting: meeting, response: response, modelContext: modelContext)
-        default:
-            // Just update locally if we can't determine the provider
+        case .imap:
+            // IMAP can't send calendar responses — update locally only
             updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+        default:
+            // Calendar-fetched events won't have a sourceMessage — check accountEmail
+            if !meeting.accountEmail.isEmpty {
+                respondViaGmail(meeting: meeting, response: response, modelContext: modelContext)
+            } else {
+                updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+            }
         }
     }
 
     // MARK: - Gmail Calendar Response
 
     private func respondViaGmail(meeting: MeetingInvite, response: MeetingResponse, modelContext: ModelContext) {
-        GmailAuthService.shared.getValidAccessToken { [weak self] token in
+        let accountEmail = meeting.sourceMessage?.account?.email ?? (meeting.accountEmail.isEmpty ? nil : meeting.accountEmail)
+        guard let accountEmail = accountEmail else {
+            updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+            return
+        }
+        GmailAuthService.shared.getValidAccessToken(for: accountEmail) { [weak self] token in
             guard let token = token else { return }
 
             let calendarResponse = self?.gmailResponseBody(for: response) ?? ""
@@ -35,31 +47,65 @@ final class MeetingResponseService {
                 return
             }
 
-            // Use Google Calendar API to respond
+            // First GET the event to retrieve the full attendees list,
+            // then PATCH with updated responseStatus for our attendee.
             let urlString = "https://www.googleapis.com/calendar/v3/calendars/primary/events/\(eventId)"
             guard let url = URL(string: urlString) else { return }
 
-            var request = URLRequest(url: url)
-            request.httpMethod = "PATCH"
-            request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            var getRequest = URLRequest(url: url)
+            getRequest.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
-            let body: [String: Any] = [
-                "attendees": [
-                    ["self": true, "responseStatus": calendarResponse]
-                ]
-            ]
-            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-            URLSession.shared.dataTask(with: request) { _, httpResponse, error in
-                if let httpResponse = httpResponse as? HTTPURLResponse,
-                   (200...299).contains(httpResponse.statusCode) {
+            URLSession.shared.dataTask(with: getRequest) { data, _, getError in
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      var attendees = json["attendees"] as? [[String: Any]] else {
+                    print("Gmail calendar response: failed to GET event attendees: \(getError?.localizedDescription ?? "no data")")
                     self?.updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
-                } else {
-                    print("Gmail calendar response failed: \(error?.localizedDescription ?? "unknown")")
-                    // Still update locally for UX
-                    self?.updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+                    return
                 }
+
+                // Update our own attendee entry
+                var found = false
+                for i in attendees.indices {
+                    if let isSelf = attendees[i]["self"] as? Bool, isSelf {
+                        attendees[i]["responseStatus"] = calendarResponse
+                        found = true
+                        break
+                    }
+                }
+                if !found {
+                    // Fallback: match by email
+                    for i in attendees.indices {
+                        if let email = attendees[i]["email"] as? String,
+                           email.lowercased() == accountEmail.lowercased() {
+                            attendees[i]["responseStatus"] = calendarResponse
+                            found = true
+                            break
+                        }
+                    }
+                }
+                if !found {
+                    // Append ourselves if not in attendees list
+                    attendees.append(["email": accountEmail, "responseStatus": calendarResponse])
+                }
+
+                var patchRequest = URLRequest(url: url)
+                patchRequest.httpMethod = "PATCH"
+                patchRequest.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                patchRequest.addValue("application/json", forHTTPHeaderField: "Content-Type")
+
+                let patchBody: [String: Any] = ["attendees": attendees]
+                patchRequest.httpBody = try? JSONSerialization.data(withJSONObject: patchBody)
+
+                URLSession.shared.dataTask(with: patchRequest) { _, httpResponse, error in
+                    if let httpResponse = httpResponse as? HTTPURLResponse,
+                       (200...299).contains(httpResponse.statusCode) {
+                        self?.updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+                    } else {
+                        print("Gmail calendar response PATCH failed: \(error?.localizedDescription ?? "unknown")")
+                        self?.updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+                    }
+                }.resume()
             }.resume()
         }
     }
@@ -76,7 +122,11 @@ final class MeetingResponseService {
     // MARK: - Outlook/Graph Response
 
     private func respondViaOutlook(meeting: MeetingInvite, response: MeetingResponse, modelContext: ModelContext) {
-        OutlookAuthService.shared.getValidAccessToken { [weak self] token in
+        guard let accountEmail = meeting.sourceMessage?.account?.email else {
+            updateLocalStatus(meeting: meeting, response: response, modelContext: modelContext)
+            return
+        }
+        OutlookAuthService.shared.getValidAccessToken(for: accountEmail) { [weak self] token in
             guard let token = token else { return }
 
             let eventId = meeting.eventId

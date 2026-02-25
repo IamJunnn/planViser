@@ -20,6 +20,9 @@ packages:
   MSAL:
     url: https://github.com/AzureAD/microsoft-authentication-library-for-objc.git
     from: "1.5.0"
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle.git
+    from: "2.6.0"
 
 targets:
   Planviser:
@@ -33,7 +36,11 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Planviser/Planviser.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.planviser.app
         GENERATE_INFOPLIST_FILE: false
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 96AL947RQ2
     dependencies:
       - package: KeychainAccess
       - package: AppAuth
       - package: MSAL
+      - package: Sparkle
+        product: Sparkle

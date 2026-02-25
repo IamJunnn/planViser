@@ -20,6 +20,8 @@ final class MeetingInvite {
     var videoLink: String
     var responseStatus: MeetingResponse
     var eventId: String
+    var accountEmail: String = ""
+    var meetingDescription: String = ""
 
     var sourceMessage: EmailMessage?
 
@@ -32,7 +34,9 @@ final class MeetingInvite {
         location: String = "",
         videoLink: String = "",
         responseStatus: MeetingResponse = .pending,
-        eventId: String = ""
+        eventId: String = "",
+        accountEmail: String = "",
+        meetingDescription: String = ""
     ) {
         self.id = UUID()
         self.title = title
@@ -44,5 +48,7 @@ final class MeetingInvite {
         self.videoLink = videoLink
         self.responseStatus = responseStatus
         self.eventId = eventId
+        self.accountEmail = accountEmail
+        self.meetingDescription = meetingDescription
     }
 }

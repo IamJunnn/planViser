@@ -1,0 +1,193 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  pages: write
+
+env:
+  APP_NAME: Planviser
+  SCHEME: Planviser
+  PROJECT: Planviser.xcodeproj
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve packages
+        run: xcodebuild -resolvePackageDependencies -project $PROJECT -scheme $SCHEME
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      - name: Build archive
+        run: |
+          xcodebuild archive \
+            -project $PROJECT \
+            -scheme $SCHEME \
+            -configuration Release \
+            -archivePath build/$APP_NAME.xcarchive \
+            MARKETING_VERSION=${{ steps.version.outputs.version }} \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGN_IDENTITY="${{ secrets.CODE_SIGN_IDENTITY || '-' }}" \
+            DEVELOPMENT_TEAM="${{ secrets.DEVELOPMENT_TEAM || '' }}" \
+            CODE_SIGN_STYLE="Manual" \
+            | xcbeautify || true
+
+      - name: Export app from archive
+        run: |
+          mkdir -p build/export
+          cp -R "build/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app" "build/export/"
+
+      - name: Import signing certificate
+        if: ${{ env.CERTIFICATE_P12 != '' }}
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
+      - name: Codesign app
+        if: ${{ env.CERTIFICATE_P12 != '' }}
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+        run: |
+          codesign --force --deep --sign "${{ secrets.CODE_SIGN_IDENTITY }}" \
+            --options runtime \
+            "build/export/$APP_NAME.app"
+
+      - name: Notarize app
+        if: ${{ env.APPLE_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+        run: |
+          ditto -c -k --keepParent "build/export/$APP_NAME.app" "build/$APP_NAME.zip"
+          xcrun notarytool submit "build/$APP_NAME.zip" \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --team-id "${{ secrets.DEVELOPMENT_TEAM }}" \
+            --wait
+          xcrun stapler staple "build/export/$APP_NAME.app"
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg || true
+          create-dmg \
+            --volname "$APP_NAME" \
+            --volicon "build/export/$APP_NAME.app/Contents/Resources/AppIcon.icns" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --icon "$APP_NAME.app" 150 190 \
+            --app-drop-link 450 190 \
+            "build/$APP_NAME-${{ steps.version.outputs.version }}.dmg" \
+            "build/export/" || \
+          hdiutil create -volname "$APP_NAME" \
+            -srcfolder "build/export/" \
+            -ov -format UDZO \
+            "build/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
+
+      - name: Sign update with Sparkle
+        if: ${{ env.SPARKLE_PRIVATE_KEY != '' }}
+        id: sparkle_sign
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          DMG="build/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
+          LENGTH=$(stat -f%z "$DMG")
+          SIGNATURE=$(echo "$SPARKLE_PRIVATE_KEY" | ./scripts/sign_update "$DMG")
+          echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+          echo "length=$LENGTH" >> "$GITHUB_OUTPUT"
+
+      - name: Generate appcast.xml
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DMG_NAME="$APP_NAME-$VERSION.dmg"
+          DMG_URL="https://github.com/${{ github.repository }}/releases/download/v$VERSION/$DMG_NAME"
+          LENGTH=$(stat -f%z "build/$DMG_NAME")
+          DATE=$(date -R)
+          SIGNATURE="${{ steps.sparkle_sign.outputs.signature || '' }}"
+
+          SIGNATURE_ATTR=""
+          if [ -n "$SIGNATURE" ]; then
+            SIGNATURE_ATTR="sparkle:edSignature=\"$SIGNATURE\""
+          fi
+
+          cat > build/appcast.xml << APPCAST_EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <channel>
+              <title>$APP_NAME Updates</title>
+              <item>
+                <title>Version $VERSION</title>
+                <pubDate>$DATE</pubDate>
+                <sparkle:version>${{ github.run_number }}</sparkle:version>
+                <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="$DMG_URL"
+                  length="$LENGTH"
+                  type="application/octet-stream"
+                  $SIGNATURE_ATTR
+                />
+              </item>
+            </channel>
+          </rss>
+          APPCAST_EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ env.APP_NAME }} v${{ steps.version.outputs.version }}"
+          body: |
+            ## ${{ env.APP_NAME }} v${{ steps.version.outputs.version }}
+
+            ### Installation
+            1. Download the DMG below
+            2. Open it and drag Planviser to Applications
+            3. Existing users will be auto-notified via Sparkle
+
+            ### What's New
+            See commit history for changes.
+          files: |
+            build/${{ env.APP_NAME }}-${{ steps.version.outputs.version }}.dmg
+          draft: false
+          prerelease: false
+
+      - name: Commit appcast.xml to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout main
+          cp build/appcast.xml appcast.xml
+          git add appcast.xml
+          git commit -m "Update appcast for v${{ steps.version.outputs.version }}" || echo "No changes to commit"
+          git push origin main

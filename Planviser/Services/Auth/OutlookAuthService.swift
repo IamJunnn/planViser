@@ -1,15 +1,23 @@
 import Foundation
 import MSAL
 
+struct OutlookAccountInfo: Equatable, Identifiable {
+    let email: String
+    let displayName: String
+    var id: String { email }
+}
+
 final class OutlookAuthService: ObservableObject {
     static let shared = OutlookAuthService()
 
-    @Published var isAuthenticated = false
-    @Published var userEmail: String?
-    @Published var userName: String?
+    @Published var connectedAccounts: [OutlookAccountInfo] = []
+
+    var hasConnectedAccounts: Bool { !connectedAccounts.isEmpty }
 
     private var msalApplication: MSALPublicClientApplication?
-    private var currentAccount: MSALAccount?
+
+    /// Cache of email → MSALAccount for token operations
+    private var msalAccountMap: [String: MSALAccount] = [:]
 
     private let scopes = [
         "Mail.Read",
@@ -19,7 +27,7 @@ final class OutlookAuthService: ObservableObject {
 
     private init() {
         setupMSAL()
-        loadExistingAccount()
+        loadExistingAccounts()
     }
 
     private func setupMSAL() {
@@ -44,17 +52,22 @@ final class OutlookAuthService: ObservableObject {
         }
     }
 
-    private func loadExistingAccount() {
+    private func loadExistingAccounts() {
         guard let app = msalApplication else { return }
 
         do {
             let accounts = try app.allAccounts()
-            if let account = accounts.first {
-                currentAccount = account
+            var loaded: [OutlookAccountInfo] = []
+
+            for account in accounts {
+                guard let email = account.username else { continue }
+                msalAccountMap[email] = account
+                loaded.append(OutlookAccountInfo(email: email, displayName: email))
+            }
+
+            if !loaded.isEmpty {
                 DispatchQueue.main.async {
-                    self.isAuthenticated = true
-                    self.userEmail = account.username
-                    self.userName = account.username
+                    self.connectedAccounts = loaded
                 }
             }
         } catch {
@@ -74,13 +87,15 @@ final class OutlookAuthService: ObservableObject {
             guard let self = self else { return }
 
             if let result = result {
-                self.currentAccount = result.account
-                try? KeychainService.shared.saveAccessToken(result.accessToken, for: "outlook")
+                let email = result.account.username ?? "unknown"
+                self.msalAccountMap[email] = result.account
+                try? KeychainService.shared.saveAccessToken(result.accessToken, for: "outlook.\(email)")
 
                 DispatchQueue.main.async {
-                    self.isAuthenticated = true
-                    self.userEmail = result.account.username
-                    self.userName = result.account.username
+                    let info = OutlookAccountInfo(email: email, displayName: email)
+                    if !self.connectedAccounts.contains(where: { $0.email == email }) {
+                        self.connectedAccounts.append(info)
+                    }
                 }
             } else if let error = error {
                 print("Outlook auth error: \(error.localizedDescription)")
@@ -88,44 +103,40 @@ final class OutlookAuthService: ObservableObject {
         }
     }
 
-    func signOut() {
-        guard let app = msalApplication, let account = currentAccount else { return }
+    func signOut(email: String) {
+        guard let app = msalApplication,
+              let msalAccount = msalAccountMap[email] else { return }
 
         do {
-            try app.remove(account)
+            try app.remove(msalAccount)
         } catch {
             print("MSAL sign out error: \(error)")
         }
 
-        try? KeychainService.shared.deleteTokens(for: "outlook")
-        currentAccount = nil
+        msalAccountMap.removeValue(forKey: email)
+        try? KeychainService.shared.deleteTokens(for: "outlook.\(email)")
 
         DispatchQueue.main.async {
-            self.isAuthenticated = false
-            self.userEmail = nil
-            self.userName = nil
+            self.connectedAccounts.removeAll { $0.email == email }
         }
     }
 
-    func getValidAccessToken(completion: @escaping (String?) -> Void) {
-        guard let app = msalApplication, let account = currentAccount else {
+    func getValidAccessToken(for email: String, completion: @escaping (String?) -> Void) {
+        guard let app = msalApplication,
+              let msalAccount = msalAccountMap[email] else {
             completion(nil)
             return
         }
 
-        let silentParams = MSALSilentTokenParameters(scopes: scopes, account: account)
+        let silentParams = MSALSilentTokenParameters(scopes: scopes, account: msalAccount)
 
-        app.acquireTokenSilent(with: silentParams) { [weak self] result, error in
+        app.acquireTokenSilent(with: silentParams) { result, error in
             if let result = result {
-                try? KeychainService.shared.saveAccessToken(result.accessToken, for: "outlook")
+                try? KeychainService.shared.saveAccessToken(result.accessToken, for: "outlook.\(email)")
                 completion(result.accessToken)
             } else if let nsError = error as? NSError,
                       nsError.domain == MSALErrorDomain,
                       nsError.code == MSALError.interactionRequired.rawValue {
-                // Token expired, need interactive sign-in
-                DispatchQueue.main.async {
-                    self?.isAuthenticated = false
-                }
                 completion(nil)
             } else {
                 completion(nil)

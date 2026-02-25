@@ -6,7 +6,7 @@ final class AutoRefreshManager: ObservableObject {
     static let shared = AutoRefreshManager()
 
     @Published var isEnabled = true
-    @Published var intervalMinutes = 5
+    @Published var intervalMinutes = 1
 
     private var timer: Timer?
     private var modelContext: ModelContext?
@@ -15,6 +15,8 @@ final class AutoRefreshManager: ObservableObject {
 
     func start(modelContext: ModelContext) {
         self.modelContext = modelContext
+        // Sync immediately on launch, then schedule recurring timer
+        refresh()
         scheduleTimer()
     }
 

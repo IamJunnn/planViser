@@ -10,10 +10,16 @@ struct GraphMessageListResponse: Decodable {
     }
 }
 
+struct GraphMessageBody: Decodable {
+    let contentType: String
+    let content: String
+}
+
 struct GraphMessage: Decodable {
     let id: String
     let subject: String?
     let bodyPreview: String?
+    let body: GraphMessageBody?
     let receivedDateTime: String
     let isRead: Bool
     let from: GraphEmailAddress?
@@ -64,7 +70,7 @@ final class OutlookAPIService {
         top: Int = 50,
         completion: @escaping (Result<[GraphMessage], Error>) -> Void
     ) {
-        let urlString = "\(baseURL)/mailFolders/inbox/messages?$top=\(top)&$orderby=receivedDateTime%20desc&$select=id,subject,bodyPreview,receivedDateTime,isRead,from,hasAttachments"
+        let urlString = "\(baseURL)/mailFolders/inbox/messages?$top=\(top)&$orderby=receivedDateTime%20desc&$select=id,subject,bodyPreview,body,receivedDateTime,isRead,from,hasAttachments"
         var request = URLRequest(url: URL(string: urlString)!)
         request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
@@ -114,6 +120,56 @@ final class OutlookAPIService {
             } catch {
                 completion(.failure(error))
             }
+        }.resume()
+    }
+
+    func markAsRead(
+        accessToken: String,
+        messageId: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let urlString = "\(baseURL)/messages/\(messageId)"
+        var request = URLRequest(url: URL(string: urlString)!)
+        request.httpMethod = "PATCH"
+        request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["isRead": true])
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+                completion(.failure(APIError.httpError(httpResponse.statusCode)))
+                return
+            }
+            completion(.success(()))
+        }.resume()
+    }
+
+    func trashMessage(
+        accessToken: String,
+        messageId: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        let urlString = "\(baseURL)/messages/\(messageId)/move"
+        var request = URLRequest(url: URL(string: urlString)!)
+        request.httpMethod = "POST"
+        request.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["destinationId": "deleteditems"])
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+                completion(.failure(APIError.httpError(httpResponse.statusCode)))
+                return
+            }
+            completion(.success(()))
         }.resume()
     }
 

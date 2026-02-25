@@ -85,9 +85,9 @@ final class ICSParser {
                 event.organizer = name
                 event.organizerEmail = email
             case "DTSTART":
-                event.startDate = parseICSDate(value)
+                event.startDate = parseICSDate(value, tzid: extractTZID(from: trimmed))
             case "DTEND":
-                event.endDate = parseICSDate(value)
+                event.endDate = parseICSDate(value, tzid: extractTZID(from: trimmed))
             case "LOCATION":
                 event.location = value
             case "DESCRIPTION":
@@ -148,7 +148,8 @@ final class ICSParser {
                 endTime: event.endDate ?? Date().addingTimeInterval(3600),
                 location: event.location,
                 videoLink: videoLink,
-                eventId: event.uid
+                eventId: event.uid,
+                meetingDescription: event.description
             )
             invite.sourceMessage = sourceMessage
             modelContext.insert(invite)
@@ -182,17 +183,40 @@ final class ICSParser {
         return (baseKey.uppercased(), value)
     }
 
-    private func parseICSDate(_ value: String) -> Date? {
-        // Remove any TZID prefix that might remain
+    private func extractTZID(from line: String) -> String? {
+        guard let tzidRange = line.range(of: "TZID=", options: .caseInsensitive) else { return nil }
+        let afterTZID = line[tzidRange.upperBound...]
+        if let endRange = afterTZID.rangeOfCharacter(from: CharacterSet(charactersIn: ":;")) {
+            return String(afterTZID[afterTZID.startIndex..<endRange.lowerBound])
+        }
+        return String(afterTZID)
+    }
+
+    private func parseICSDate(_ value: String, tzid: String? = nil) -> Date? {
         let dateString = value.components(separatedBy: ";").last ?? value
 
-        if let date = icsDateFormatter.date(from: dateString) {
-            return date
+        // UTC date (ends with Z)
+        if dateString.hasSuffix("Z") {
+            return icsDateFormatter.date(from: dateString)
         }
-        if let date = icsDateOnlyFormatter.date(from: dateString) {
-            return date
+
+        // Date with time but no Z — use TZID or local timezone
+        if dateString.contains("T") {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyyMMdd'T'HHmmss"
+            if let tzid = tzid, let tz = TimeZone(identifier: tzid) {
+                fmt.timeZone = tz
+            } else {
+                fmt.timeZone = .current
+            }
+            return fmt.date(from: dateString)
         }
-        return nil
+
+        // Date only — use local timezone
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyyMMdd"
+        fmt.timeZone = .current
+        return fmt.date(from: dateString)
     }
 
     private func parseOrganizer(_ value: String) -> (name: String, email: String) {

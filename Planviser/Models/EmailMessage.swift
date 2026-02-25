@@ -13,6 +13,7 @@ final class EmailMessage {
     var isRead: Bool
     var hasCalendarInvite: Bool
     var icsData: Data?
+    var htmlBody: String?
 
     var account: EmailAccount?
 
@@ -25,7 +26,8 @@ final class EmailMessage {
         date: Date,
         isRead: Bool = false,
         hasCalendarInvite: Bool = false,
-        icsData: Data? = nil
+        icsData: Data? = nil,
+        htmlBody: String? = nil
     ) {
         self.id = UUID()
         self.messageId = messageId
@@ -37,5 +39,6 @@ final class EmailMessage {
         self.isRead = isRead
         self.hasCalendarInvite = hasCalendarInvite
         self.icsData = icsData
+        self.htmlBody = htmlBody
     }
 }
