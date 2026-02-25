@@ -30,6 +30,37 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Generate Secrets.swift
+        env:
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+        run: |
+          cat > Planviser/Services/Secrets.swift << 'SWIFT_EOF'
+          enum Secrets {
+              static let googleClientID = "GOOGLE_CLIENT_ID_PLACEHOLDER"
+              static let googleRedirectURI = "com.planviser.app:/oauth2redirect/google"
+              static let microsoftClientID = "MICROSOFT_CLIENT_ID_PLACEHOLDER"
+              static let microsoftRedirectURI = "msauth.com.planviser.app://auth"
+          }
+          SWIFT_EOF
+          sed -i '' "s|GOOGLE_CLIENT_ID_PLACEHOLDER|${GOOGLE_CLIENT_ID}|" Planviser/Services/Secrets.swift
+          sed -i '' "s|MICROSOFT_CLIENT_ID_PLACEHOLDER|${MICROSOFT_CLIENT_ID}|" Planviser/Services/Secrets.swift
+
+      - name: Import signing certificate
+        if: ${{ secrets.CERTIFICATE_P12 != '' }}
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm certificate.p12
+
       - name: Resolve packages
         run: xcodebuild -resolvePackageDependencies -project $PROJECT -scheme $SCHEME
 
@@ -59,34 +90,15 @@ jobs:
           mkdir -p build/export
           cp -R "build/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app" "build/export/"
 
-      - name: Import signing certificate
-        if: ${{ env.CERTIFICATE_P12 != '' }}
-        env:
-          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
-        run: |
-          echo "$CERTIFICATE_P12" | base64 --decode > certificate.p12
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import certificate.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm certificate.p12
-
       - name: Codesign app
-        if: ${{ env.CERTIFICATE_P12 != '' }}
-        env:
-          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+        if: ${{ secrets.CERTIFICATE_P12 != '' }}
         run: |
           codesign --force --deep --sign "${{ secrets.CODE_SIGN_IDENTITY }}" \
             --options runtime \
             "build/export/$APP_NAME.app"
 
       - name: Notarize app
-        if: ${{ env.APPLE_ID != '' }}
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
+        if: ${{ secrets.APPLE_ID != '' }}
         run: |
           ditto -c -k --keepParent "build/export/$APP_NAME.app" "build/$APP_NAME.zip"
           xcrun notarytool submit "build/$APP_NAME.zip" \
