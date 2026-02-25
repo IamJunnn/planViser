@@ -30,6 +30,16 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Check available secrets
+        env:
+          CERT: ${{ secrets.CERTIFICATE_P12 }}
+          APPLE: ${{ secrets.APPLE_ID }}
+          SPARKLE: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          [ -n "$CERT" ] && echo "HAS_CERTIFICATE=true" >> "$GITHUB_ENV" || true
+          [ -n "$APPLE" ] && echo "HAS_APPLE_ID=true" >> "$GITHUB_ENV" || true
+          [ -n "$SPARKLE" ] && echo "HAS_SPARKLE_KEY=true" >> "$GITHUB_ENV" || true
+
       - name: Generate Secrets.swift
         env:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -47,7 +57,7 @@ jobs:
           sed -i '' "s|MICROSOFT_CLIENT_ID_PLACEHOLDER|${MICROSOFT_CLIENT_ID}|" Planviser/Services/Secrets.swift
 
       - name: Import signing certificate
-        if: ${{ secrets.CERTIFICATE_P12 != '' }}
+        if: env.HAS_CERTIFICATE == 'true'
         env:
           CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
           CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
@@ -91,14 +101,14 @@ jobs:
           cp -R "build/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app" "build/export/"
 
       - name: Codesign app
-        if: ${{ secrets.CERTIFICATE_P12 != '' }}
+        if: env.HAS_CERTIFICATE == 'true'
         run: |
           codesign --force --deep --sign "${{ secrets.CODE_SIGN_IDENTITY }}" \
             --options runtime \
             "build/export/$APP_NAME.app"
 
       - name: Notarize app
-        if: ${{ secrets.APPLE_ID != '' }}
+        if: env.HAS_APPLE_ID == 'true'
         run: |
           ditto -c -k --keepParent "build/export/$APP_NAME.app" "build/$APP_NAME.zip"
           xcrun notarytool submit "build/$APP_NAME.zip" \
@@ -127,7 +137,7 @@ jobs:
             "build/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
 
       - name: Sign update with Sparkle
-        if: ${{ env.SPARKLE_PRIVATE_KEY != '' }}
+        if: env.HAS_SPARKLE_KEY == 'true'
         id: sparkle_sign
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
