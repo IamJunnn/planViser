@@ -139,11 +139,11 @@ jobs:
       - name: Sign update with Sparkle
         if: env.HAS_SPARKLE_KEY == 'true'
         id: sparkle_sign
+        continue-on-error: true
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
         run: |
-          SPARKLE_URL=$(curl -s https://api.github.com/repos/sparkle-project/Sparkle/releases/latest | grep "browser_download_url.*tar.xz" | head -1 | cut -d'"' -f4)
-          curl -sL "$SPARKLE_URL" -o /tmp/sparkle.tar.xz
+          curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/2.6.4/Sparkle-2.6.4.tar.xz" -o /tmp/sparkle.tar.xz
           mkdir -p /tmp/sparkle && tar xJf /tmp/sparkle.tar.xz -C /tmp/sparkle
           DMG="build/$APP_NAME-${{ steps.version.outputs.version }}.dmg"
           LENGTH=$(stat -f%z "$DMG")
